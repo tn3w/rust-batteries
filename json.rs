@@ -1,3 +1,6 @@
+use crate::serde::{
+    self as sd, Deserialize, Deserializer, Kind, NumKind, Serialize, Serializer,
+};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write};
 
@@ -487,4 +490,295 @@ fn write_float(out: &mut String, f: f64) {
     if !s.contains('.') && !s.contains('e') && !s.contains('E') {
         out.push_str(".0");
     }
+}
+
+fn to_se(e: Error) -> sd::Error { sd::err(e.to_string()) }
+
+pub struct JsonSer {
+    pub out: String,
+    stack: Vec<(u8, bool)>,
+}
+
+impl JsonSer {
+    pub fn new() -> Self { JsonSer { out: String::new(), stack: Vec::new() } }
+    pub fn with_capacity(c: usize) -> Self {
+        JsonSer { out: String::with_capacity(c), stack: Vec::new() }
+    }
+    fn before_value(&mut self) {
+        if let Some(top) = self.stack.last_mut() {
+            if top.0 == 0 {
+                if top.1 { self.out.push(','); } else { top.1 = true; }
+            }
+        }
+    }
+}
+
+impl Default for JsonSer { fn default() -> Self { Self::new() } }
+
+impl Serializer for JsonSer {
+    fn emit_null(&mut self) -> Result<(), sd::Error> {
+        self.before_value(); self.out.push_str("null"); Ok(())
+    }
+    fn emit_bool(&mut self, v: bool) -> Result<(), sd::Error> {
+        self.before_value();
+        self.out.push_str(if v { "true" } else { "false" });
+        Ok(())
+    }
+    fn emit_i64(&mut self, v: i64) -> Result<(), sd::Error> {
+        self.before_value(); write_i64(&mut self.out, v); Ok(())
+    }
+    fn emit_u64(&mut self, v: u64) -> Result<(), sd::Error> {
+        self.before_value(); write_u64(&mut self.out, v); Ok(())
+    }
+    fn emit_f64(&mut self, v: f64) -> Result<(), sd::Error> {
+        self.before_value(); write_float(&mut self.out, v); Ok(())
+    }
+    fn emit_str(&mut self, v: &str) -> Result<(), sd::Error> {
+        self.before_value(); write_string(&mut self.out, v); Ok(())
+    }
+    fn begin_seq(&mut self) -> Result<(), sd::Error> {
+        self.before_value();
+        self.out.push('[');
+        self.stack.push((0, false));
+        Ok(())
+    }
+    fn end_seq(&mut self) -> Result<(), sd::Error> {
+        self.out.push(']'); self.stack.pop(); Ok(())
+    }
+    fn begin_map(&mut self) -> Result<(), sd::Error> {
+        self.before_value();
+        self.out.push('{');
+        self.stack.push((1, false));
+        Ok(())
+    }
+    fn key(&mut self, k: &str) -> Result<(), sd::Error> {
+        let top = self.stack.last_mut().ok_or_else(|| sd::err("key outside map"))?;
+        if top.1 { self.out.push(','); } else { top.1 = true; }
+        write_string(&mut self.out, k);
+        self.out.push(':');
+        Ok(())
+    }
+    fn end_map(&mut self) -> Result<(), sd::Error> {
+        self.out.push('}'); self.stack.pop(); Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Frame { Seq(bool), Map(bool) }
+
+pub struct JsonDe<'a> {
+    p: Parser<'a>,
+    stack: Vec<Frame>,
+}
+
+impl<'a> JsonDe<'a> {
+    pub fn new(s: &'a str) -> Self { JsonDe { p: Parser::new(s.as_bytes()), stack: Vec::new() } }
+    pub fn finish(&mut self) -> Result<(), sd::Error> {
+        self.p.skip_ws();
+        if self.p.pos < self.p.bytes.len() {
+            return Err(to_se(self.p.error("trailing characters")));
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Deserializer for JsonDe<'a> {
+    fn peek(&mut self) -> Result<Kind, sd::Error> {
+        self.p.skip_ws();
+        match self.p.peek() {
+            Some(b'n') => Ok(Kind::Null),
+            Some(b't') | Some(b'f') => Ok(Kind::Bool),
+            Some(b'"') => Ok(Kind::Str),
+            Some(b'[') => Ok(Kind::Seq),
+            Some(b'{') => Ok(Kind::Map),
+            Some(c) if c == b'-' || c.is_ascii_digit() => Ok(Kind::Num),
+            Some(_) => Err(to_se(self.p.error("expected value"))),
+            None => Err(to_se(self.p.error("unexpected end of input"))),
+        }
+    }
+    fn num_kind(&mut self) -> Result<NumKind, sd::Error> {
+        self.p.skip_ws();
+        let mut i = self.p.pos;
+        let neg = self.p.bytes.get(i) == Some(&b'-');
+        if neg { i += 1; }
+        while let Some(&b) = self.p.bytes.get(i) {
+            if b == b'.' || b == b'e' || b == b'E' { return Ok(NumKind::F64); }
+            if !b.is_ascii_digit() { break; }
+            i += 1;
+        }
+        Ok(if neg { NumKind::I64 } else { NumKind::U64 })
+    }
+    fn read_null(&mut self) -> Result<(), sd::Error> {
+        self.p.skip_ws();
+        self.p.parse_literal(b"null", Value::Null).map_err(to_se)?;
+        Ok(())
+    }
+    fn read_bool(&mut self) -> Result<bool, sd::Error> {
+        self.p.skip_ws();
+        match self.p.peek() {
+            Some(b't') => { self.p.parse_literal(b"true", Value::Null).map_err(to_se)?; Ok(true) }
+            Some(b'f') => { self.p.parse_literal(b"false", Value::Null).map_err(to_se)?; Ok(false) }
+            _ => Err(to_se(self.p.error("expected bool"))),
+        }
+    }
+    fn read_i64(&mut self) -> Result<i64, sd::Error> {
+        self.p.skip_ws();
+        match self.p.parse_number().map_err(to_se)? {
+            Value::Number(Number::NegInt(i)) => Ok(i),
+            Value::Number(Number::PosInt(u)) => i64::try_from(u).map_err(|_| sd::err("i64 overflow")),
+            Value::Number(Number::Float(f)) => Ok(f as i64),
+            _ => Err(sd::err("expected number")),
+        }
+    }
+    fn read_u64(&mut self) -> Result<u64, sd::Error> {
+        self.p.skip_ws();
+        match self.p.parse_number().map_err(to_se)? {
+            Value::Number(Number::PosInt(u)) => Ok(u),
+            Value::Number(Number::NegInt(i)) if i >= 0 => Ok(i as u64),
+            Value::Number(Number::Float(f)) if f >= 0.0 => Ok(f as u64),
+            _ => Err(sd::err("u64 out of range")),
+        }
+    }
+    fn read_f64(&mut self) -> Result<f64, sd::Error> {
+        self.p.skip_ws();
+        match self.p.parse_number().map_err(to_se)? {
+            Value::Number(Number::Float(f)) => Ok(f),
+            Value::Number(Number::PosInt(u)) => Ok(u as f64),
+            Value::Number(Number::NegInt(i)) => Ok(i as f64),
+            _ => Err(sd::err("expected number")),
+        }
+    }
+    fn read_str(&mut self) -> Result<String, sd::Error> {
+        self.p.skip_ws();
+        if self.p.peek() != Some(b'"') {
+            return Err(to_se(self.p.error("expected string")));
+        }
+        self.p.parse_string().map_err(to_se)
+    }
+    fn begin_seq(&mut self) -> Result<(), sd::Error> {
+        self.p.skip_ws();
+        if self.p.peek() != Some(b'[') {
+            return Err(to_se(self.p.error("expected `[`")));
+        }
+        self.p.bump();
+        self.stack.push(Frame::Seq(true));
+        Ok(())
+    }
+    fn seq_next(&mut self) -> Result<bool, sd::Error> {
+        self.p.skip_ws();
+        let first = match self.stack.last_mut() {
+            Some(Frame::Seq(f)) => f,
+            _ => return Err(sd::err("not in seq")),
+        };
+        if self.p.peek() == Some(b']') {
+            self.p.bump();
+            self.stack.pop();
+            return Ok(false);
+        }
+        if *first { *first = false; return Ok(true); }
+        if self.p.peek() == Some(b',') { self.p.bump(); Ok(true) }
+        else { Err(to_se(self.p.error("expected `,` or `]`"))) }
+    }
+    fn begin_map(&mut self) -> Result<(), sd::Error> {
+        self.p.skip_ws();
+        if self.p.peek() != Some(b'{') {
+            return Err(to_se(self.p.error("expected `{`")));
+        }
+        self.p.bump();
+        self.stack.push(Frame::Map(true));
+        Ok(())
+    }
+    fn map_next(&mut self) -> Result<Option<String>, sd::Error> {
+        self.p.skip_ws();
+        let first = match self.stack.last_mut() {
+            Some(Frame::Map(f)) => f,
+            _ => return Err(sd::err("not in map")),
+        };
+        if self.p.peek() == Some(b'}') {
+            self.p.bump();
+            self.stack.pop();
+            return Ok(None);
+        }
+        if *first { *first = false; }
+        else if self.p.peek() == Some(b',') { self.p.bump(); self.p.skip_ws(); }
+        else { return Err(to_se(self.p.error("expected `,` or `}`"))); }
+        if self.p.peek() != Some(b'"') {
+            return Err(to_se(self.p.error("expected key")));
+        }
+        let k = self.p.parse_string().map_err(to_se)?;
+        self.p.skip_ws();
+        if self.p.peek() != Some(b':') {
+            return Err(to_se(self.p.error("expected `:`")));
+        }
+        self.p.bump();
+        Ok(Some(k))
+    }
+    fn skip(&mut self) -> Result<(), sd::Error> {
+        self.p.skip_ws();
+        let _ = self.p.parse_value().map_err(to_se)?;
+        Ok(())
+    }
+}
+
+impl Serialize for Value {
+    fn serialize<S: Serializer>(&self, s: &mut S) -> Result<(), sd::Error> {
+        match self {
+            Value::Null => s.emit_null(),
+            Value::Bool(b) => s.emit_bool(*b),
+            Value::Number(Number::PosInt(u)) => s.emit_u64(*u),
+            Value::Number(Number::NegInt(i)) => s.emit_i64(*i),
+            Value::Number(Number::Float(f)) => s.emit_f64(*f),
+            Value::String(v) => s.emit_str(v),
+            Value::Array(a) => {
+                s.begin_seq()?;
+                for x in a { x.serialize(s)?; }
+                s.end_seq()
+            }
+            Value::Object(o) => {
+                s.begin_map()?;
+                for (k, v) in o { s.key(k)?; v.serialize(s)?; }
+                s.end_map()
+            }
+        }
+    }
+}
+
+impl Deserialize for Value {
+    fn deserialize<D: Deserializer>(d: &mut D) -> Result<Self, sd::Error> {
+        match d.peek()? {
+            Kind::Null => { d.read_null()?; Ok(Value::Null) }
+            Kind::Bool => Ok(Value::Bool(d.read_bool()?)),
+            Kind::Num => match d.num_kind()? {
+                NumKind::U64 => Ok(Value::Number(Number::PosInt(d.read_u64()?))),
+                NumKind::I64 => Ok(Value::Number(Number::NegInt(d.read_i64()?))),
+                NumKind::F64 => Ok(Value::Number(Number::Float(d.read_f64()?))),
+            },
+            Kind::Str => Ok(Value::String(d.read_str()?)),
+            Kind::Seq => {
+                d.begin_seq()?;
+                let mut arr = Vec::new();
+                while d.seq_next()? { arr.push(Value::deserialize(d)?); }
+                Ok(Value::Array(arr))
+            }
+            Kind::Map => {
+                d.begin_map()?;
+                let mut obj = BTreeMap::new();
+                while let Some(k) = d.map_next()? { obj.insert(k, Value::deserialize(d)?); }
+                Ok(Value::Object(obj))
+            }
+        }
+    }
+}
+
+pub fn to_string_se<T: Serialize>(v: &T) -> Result<String, sd::Error> {
+    let mut s = JsonSer::with_capacity(64);
+    v.serialize(&mut s)?;
+    Ok(s.out)
+}
+
+pub fn from_str_de<T: Deserialize>(s: &str) -> Result<T, sd::Error> {
+    let mut d = JsonDe::new(s);
+    let v = T::deserialize(&mut d)?;
+    d.finish()?;
+    Ok(v)
 }
