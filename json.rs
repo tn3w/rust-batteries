@@ -479,17 +479,7 @@ fn write_i64(out: &mut String, n: i64) {
 
 fn write_float(out: &mut String, f: f64) {
     if !f.is_finite() { out.push_str("null"); return; }
-    if f == 0.0 { out.push_str("0.0"); return; }
-    if f.fract() == 0.0 && f.abs() < 1e16 {
-        write_i64(out, f as i64);
-        out.push_str(".0");
-        return;
-    }
-    let s = format!("{}", f);
-    out.push_str(&s);
-    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-        out.push_str(".0");
-    }
+    crate::ryu::write_f64(out, f);
 }
 
 fn to_se(e: Error) -> sd::Error { sd::err(e.to_string()) }

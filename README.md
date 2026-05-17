@@ -1,5 +1,5 @@
 # rust-batteries
-Single-file Rust implementations of common 'should-be-std' functionality (regex, JSON, UUID, base64…). Drop into your project, no dependencies, ≤1000 lines each.
+Single-file Rust implementations of common 'should-be-std' functionality (regex, JSON, serde, ryu…). Drop into your project, no dependencies, ≤1000 lines each.
 
 ## regex.rs (796 LOC, safe, no deps)
 
@@ -39,9 +39,24 @@ Deserializer extension `num_kind()` reports I64/U64/F64 without consuming, so po
 
 Limits: no proc-macro derive (no enums with discriminants, no `#[serde(rename)]`). No borrowed `&'de str` (returns owned `String`).
 
-## json.rs (797 LOC, safe, no deps)
+## ryu.rs (315 LOC, safe, no deps)
 
-`serde_json::Value` parity. Linear-time parse, BTreeMap objects (alphabetical output matches serde_json default). Implements `serde::Serialize`/`Deserialize` (above) for typed round-trips.
+Shortest round-trip f64-to-string. Dragon4 with stack-allocated BigInts (24×u64 = 1536 bits, covers full f64 range including subnormals down to 5e-324).
+
+```rust
+ryu::f64_to_string(3.14);              // "3.14"
+ryu::write_f64(&mut buf, 1.5e-10);     // "1.5e-10"
+```
+
+Algorithm: Burger-Dybvig Dragon4. Boundary-asymmetric for `m == 2^52` normals. Round-half-to-even ties. k estimated via `log10`, fix-up via single ×10 step. Format matches `serde_json`/ryu rules: scientific when scientific-exp `< -5` or `>= 16`, signed exponent (`e+16`, `e-10`), else decimal. Integral floats get `.0` suffix.
+
+42/42 parity vs `serde_json` over corner cases (denorm min, f64::MAX, π, 1/3, just-below-1, 1eN/1e-N across full range).
+
+Perf: ~10-20x slower than `ryu` crate (no table lookup; pays for BigInt allocs on every call). Acceptable for JSON where floats are a fraction of total bytes; on float-heavy payloads expect 4-5x serde_json.
+
+## json.rs (774 LOC, safe, no deps)
+
+`serde_json::Value` parity. Linear-time parse, BTreeMap objects (alphabetical output matches serde_json default). Implements `serde::Serialize`/`Deserialize` (above) for typed round-trips. Float output via `ryu.rs` above.
 
 ```rust
 let v = json::from_str(r#"{"id":42,"name":"alice"}"#)?;
@@ -55,6 +70,6 @@ Types: `Null Bool Number(PosInt|NegInt|Float) String Array Object`. Index by `&s
 
 Parser: hand-rolled byte recursive descent. Strings: chunked fast scan that copies plain runs in one push, escape path handles `\" \\ \/ \b \f \n \r \t \uXXXX` with surrogate pairs. Numbers: branch by integer/float, parse via std. Line/column computed lazily on error. Pre-allocated output buffer based on Value size estimate.
 
-Perf vs `serde_json` over 10 inputs (small to big-array): parse total 1.01x (essentially matches serde_json). Serialize total 2.14x bounded by float formatting (serde_json uses ryu; we use std Display with whole-number fast path). Typed struct: 1.49x parse, 3.11x serialize vs `serde_json` + `serde_derive`.
+Perf vs `serde_json` over 10 inputs (small to big-array): parse total 1.03x (essentially matches serde_json). Serialize total 2.14x bounded by float formatting (Dragon4 BigInt vs serde_json's table-based ryu). Typed struct: 1.43x parse, 4.40x serialize vs `serde_json` + `serde_derive`. f64 shortest-round-trip matches ryu output (decimal vs scientific notation, signed exponent).
 
-Limits: No streaming. f64 round-trip may differ from ryu in shortest-representation edge cases.
+Limits: No streaming.
