@@ -84,3 +84,58 @@ Parser: hand-rolled byte recursive descent. Strings: chunked fast scan that copi
 Perf vs `serde_json` over 10 inputs (small to big-array): parse total 1.03x (essentially matches serde_json). Serialize total 2.14x bounded by float formatting (Dragon4 BigInt vs serde_json's table-based ryu). Typed struct: 1.43x parse, 4.40x serialize vs `serde_json` + `serde_derive`. f64 shortest-round-trip matches ryu output (decimal vs scientific notation, signed exponent).
 
 Limits: No streaming.
+
+## csv.rs (216 LOC, safe, no deps)
+
+RFC 4180 reader + writer with parity vs `csv` crate (headerless mode).
+
+```rust
+let recs = csv::parse_str("a,b\n\"c,d\",\"e\"\"f\"\n")?;
+csv::to_string(&recs);
+let mut r = csv::Reader::new(input).delimiter(b';');
+for rec in r { let row = rec?; /* Cow<str> per field */ }
+```
+
+Reader returns `Vec<Cow<'a, str>>` borrows unquoted/escapeless fields directly from input, allocates only on `""` escapes. Skips blank lines (matches `csv` crate `has_headers(false)`). Configurable delimiter and quote byte. Writer auto-quotes when field contains delimiter, quote, `\n`, or `\r`.
+
+Perf vs `csv` crate over 5 inputs (small, medium, quoted, wide, realistic): parse total 1.03x (essentially matches), write 1.13x. Wins on small + quoted (Cow borrow path); loses on wide-many-fields (50 columns) where csv-core's SIMD field-scanner pulls ahead.
+
+## toml.rs (987 LOC, safe, no deps)
+
+TOML v1.0 parser + serializer with parity vs `toml` crate's `Value`. BTreeMap tables → canonical alphabetical output. `Value` implements `serde::Serialize`/`Deserialize<'de>` (above) → round-trip through any format.
+
+```rust
+let v = toml::from_str("[server]\nport = 8080\n")?;
+toml::to_string(&v);
+```
+
+Types: `String Integer(i64) Float(f64) Boolean Datetime(String) Array Table`. Datetimes stored verbatim as RFC 3339 string.
+
+Syntax: comments `#`, bare/quoted/dotted keys, basic+literal strings, multi-line `"""..."""` and `'''...'''` (with `\<newline>` line-ending continuation), integers (decimal/hex `0x`/oct `0o`/bin `0b`, `_` separators), floats (`inf nan` ±, exp), booleans, `[hdr]` sections, `[[hdr]]` arrays of tables, inline tables `{ k = v }`, mixed-type arrays. Duplicate table definitions rejected; implicit-vs-explicit table state tracked.
+
+Parser: byte recursive descent. Header path navigates `Array(Table)` → last-element on each `[[hdr]]`. Dotted keys open intermediate implicit tables. Token-based value scan handles datetime detection via positional digit/colon/dash checks. Numbers: branch by `0x/0o/0b` prefix, else stdlib parse with `_` stripped.
+
+Perf vs `toml` crate over 5 inputs (small kv, nested, arrays of tables, strings, realistic): parse total 0.63x, serialize total 0.10x. Wins on serialize because no `Display` formatting machinery.
+
+Limits: Datetimes deserialize as `String` (serde trait has no datetime kind).
+
+## rand.rs (592 LOC, safe core + `unsafe` for syscalls/SIMD, no deps)
+
+ChaCha20 CSPRNG + OS entropy + distributions + slice helpers. Bit-exact stream parity with `rand_chacha::ChaCha20Rng`.
+
+```rust
+let mut r = ChaCha20Rng::from_os();
+r.next_u64(); r.gen_range_u32(0, 100); r.gen_f64();
+UniformF64::new(-1.0, 1.0).sample(&mut r);
+WeightedIndex::new([1.0, 2.0, 7.0])?.sample(&mut r);
+let mut v = vec![1, 2, 3, 4]; v.shuffle(&mut r); v.choose(&mut r);
+thread_rng().fill_bytes(&mut buf);  fill_os(&mut buf)?;
+```
+
+`Rng SeedableRng Distribution<T> SliceRandom`. Distributions: `Standard UniformU32/64 UniformF64 WeightedIndex` (cumulative + `partition_point`). Range: unbiased rejection. Shuffle: Fisher-Yates. Seed: `from_seed from_os seed_from_u64`(SplitMix64).
+
+ChaCha: 20-round, 64-bit ctr + 64-bit stream (rand_chacha layout). x86_64 runtime dispatch: AVX2 8-way (`[__m256i; 16]`, 8 blocks/refill, 4×4 transpose per 128-bit lane + `extracti128` for high half) → SSE2 4-way (`[__m128i; 16]`, ×2 to fill buffer) → scalar. 8-block (512-byte) buffer. `fill_bytes` bulk-copies words via `to_le_bytes`.
+
+OS entropy: Linux → direct `getrandom(2)` syscall (inline asm x86_64/aarch64, `/dev/urandom` fallback on ENOSYS); *BSD/macOS → `getentropy(3)`; Windows → `BCryptGenRandom`; else `/dev/urandom`.
+
+Perf vs `rand_chacha` 0.3 + `getrandom` 0.2 (AVX2 host): `next_u64` 0.74x, `fill_bytes` 1KiB 0.98x, `gen_range_u32` 0.74x, OS entropy 0.99x matches or beats across the board.
