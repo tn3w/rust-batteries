@@ -119,6 +119,35 @@ Perf vs `toml` crate over 5 inputs (small kv, nested, arrays of tables, strings,
 
 Limits: Datetimes deserialize as `String` (serde trait has no datetime kind).
 
+## hex.rs (59 LOC, safe, no deps)
+
+Hex encode/decode with parity vs `hex` crate.
+
+```rust
+hex::encode(b"\xde\xad\xbe\xef");     // "deadbeef"
+hex::encode_upper(b"\xff");           // "FF"
+hex::decode("DeAdBeEf")?;             // mixed-case accepted
+```
+
+Encode: lookup-table nibble→ASCII, 2 bytes out per input byte, `unsafe` UTF-8 wrap (output ASCII by construction). Decode: lower/upper/digit branch per nibble, rejects odd length and non-hex.
+
+Perf vs `hex` crate over 16B/256B/4KiB: encode 0.24x (4x faster, no SIMD on either side; `hex` allocates+formats), decode 1.13x (within noise; both scalar).
+
+## base64.rs (142 LOC, safe, no deps)
+
+Standard + URL-safe alphabets, parity vs `base64` crate (`STANDARD` / `URL_SAFE_NO_PAD` engines).
+
+```rust
+base64::encode(b"hello");             // "aGVsbG8="
+base64::decode("aGVsbG8=")?;          // padded, strict
+base64::encode_url(b"hello");         // "aGVsbG8" (no pad)
+base64::decode_url("aGVsbG8")?;       // rejects `=`
+```
+
+Encode: 3-byte chunks → 4 chars via 64-entry table; trailing 1/2 bytes padded with `=` (standard) or unpadded (URL). Decode: 256-entry signed lookup (`-1` sentinel = invalid), validates trailing-bit zeros on partial groups. `decode` requires length % 4 == 0; `decode_url` rejects any `=`.
+
+Perf vs `base64` crate (16B/256B/4KiB): encode 2.13x, decode 1.78x. `base64` crate has SIMD-accelerated decode/encode paths; this is scalar.
+
 ## rand.rs (592 LOC, safe core + `unsafe` for syscalls/SIMD, no deps)
 
 ChaCha20 CSPRNG + OS entropy + distributions + slice helpers. Bit-exact stream parity with `rand_chacha::ChaCha20Rng`.
