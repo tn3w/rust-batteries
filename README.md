@@ -148,6 +148,50 @@ Encode: 3-byte chunks → 4 chars via 64-entry table; trailing 1/2 bytes padded 
 
 Perf vs `base64` crate (16B/256B/4KiB): encode 2.13x, decode 1.78x. `base64` crate has SIMD-accelerated decode/encode paths; this is scalar.
 
+## anyhow.rs (199 LOC, safe, no deps)
+
+App-error type with context chaining; parity vs `anyhow` crate.
+
+```rust
+use anyhow::{Result, Context, anyhow, bail, ensure};
+
+fn load(path: &str) -> Result<String> {
+    std::fs::read_to_string(path).context("read config")?;
+    ensure!(path.ends_with(".toml"), "need .toml: {}", path);
+    bail!("not implemented");
+}
+let e = anyhow!("oops {}", 42);
+for cause in e.chain() { /* contexts then source chain */ }
+```
+
+`Error` = `Box<dyn StdError + Send + Sync>` + `Vec<String>` context stack. Blanket `From<E: StdError + Send + Sync + 'static>` → `?` works on any std error. `Context` trait extends `Result` and `Option` with `.context(msg)` / `.with_context(|| msg)`. `Display` shows top context; `Debug` shows top + `Caused by:` numbered chain (matches anyhow output exactly). Macros: `anyhow!` (msg/format/wrap), `bail!` (early return), `ensure!` (guard).
+
+Perf vs `anyhow` 1.0 (construct+display, result-chain, debug full-chain): total 0.65x. Wins because no specialized backtrace machinery / single-word repr trickery.
+
+## thiserror.rs (159 LOC, safe, no deps)
+
+Declarative `thiserror!` macro generating `Display` + `Error` + `From` for enum errors. Functional parity vs `thiserror` derive (no proc-macro dep).
+
+```rust
+thiserror! {
+    pub enum MyError {
+        "io error: {0}" Io(from std::io::Error),       // #[from] → From + source
+        "wrapped: {0}" Wrapped(source std::io::Error), // #[source] only
+        "not found" NotFound,
+        "bad {code}: {msg}" Bad { code: i32, msg: String },
+        "pair {0}/{1}" Pair(i32, String),
+        "triple {0}/{1}/{2}" Triple(u8, u8, u8),
+        transparent Trans(std::io::Error),             // #[error(transparent)]
+    }
+}
+```
+
+Variant syntax: format-string literal prefixes each variant (replaces `#[error("…")]`). Tuple keywords in field position — `from` (auto-`From<T>` + source), `source` (source only), `transparent` (forward `Display` + source to inner). Tuple variants 1–3 fields; named variants any count. Named uses Rust 2021 implicit captures (`{code}` → bound field). Tuple uses `{0}`/`{1}`/`{2}`.
+
+Perf vs `thiserror` 1.0 derive (unit/named/from+Display): total 0.96x — matches the proc-macro output (Display goes through the same `write!` codegen).
+
+Limits: tuple variants capped at 3 fields; no `Backtrace` capture (requires `Error::provide` plumbing); named-field source must be declared via tuple form.
+
 ## rand.rs (592 LOC, safe core + `unsafe` for syscalls/SIMD, no deps)
 
 ChaCha20 CSPRNG + OS entropy + distributions + slice helpers. Bit-exact stream parity with `rand_chacha::ChaCha20Rng`.
