@@ -234,15 +234,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_string(&mut self) -> Result<String, Error> {
+        Ok(self.parse_string_cow()?.into_owned())
+    }
+
+    fn parse_string_cow(&mut self) -> Result<std::borrow::Cow<'a, str>, Error> {
         self.pos += 1;
         let start = self.pos;
         while self.pos < self.bytes.len() {
             let b = self.bytes[self.pos];
             if b == b'"' {
                 let s = std::str::from_utf8(&self.bytes[start..self.pos])
-                    .map_err(|_| self.error("invalid utf-8"))?.to_string();
+                    .map_err(|_| self.error("invalid utf-8"))?;
                 self.pos += 1;
-                return Ok(s);
+                return Ok(std::borrow::Cow::Borrowed(s));
             }
             if b == b'\\' || b < 0x20 { break; }
             self.pos += 1;
@@ -276,7 +280,7 @@ impl<'a> Parser<'a> {
             out.push_str(std::str::from_utf8(&self.bytes[chunk..self.pos]).map_err(|_| self.error("invalid utf-8"))?);
             match self.bytes.get(self.pos) {
                 None => return Err(self.error("unterminated string")),
-                Some(b'"') => { self.pos += 1; return Ok(out); }
+                Some(b'"') => { self.pos += 1; return Ok(std::borrow::Cow::Owned(out)); }
                 Some(&c) if c < 0x20 => return Err(self.error("control character in string")),
                 Some(_) => {}
             }
@@ -572,7 +576,7 @@ impl<'a> JsonDe<'a> {
     }
 }
 
-impl<'a> Deserializer for JsonDe<'a> {
+impl<'a> Deserializer<'a> for JsonDe<'a> {
     fn peek(&mut self) -> Result<Kind, sd::Error> {
         self.p.skip_ws();
         match self.p.peek() {
@@ -644,6 +648,23 @@ impl<'a> Deserializer for JsonDe<'a> {
             return Err(to_se(self.p.error("expected string")));
         }
         self.p.parse_string().map_err(to_se)
+    }
+    fn read_str_borrowed(&mut self) -> Result<&'a str, sd::Error> {
+        self.p.skip_ws();
+        if self.p.peek() != Some(b'"') {
+            return Err(to_se(self.p.error("expected string")));
+        }
+        match self.p.parse_string_cow().map_err(to_se)? {
+            std::borrow::Cow::Borrowed(s) => Ok(s),
+            std::borrow::Cow::Owned(_) => Err(sd::err("cannot borrow string with escapes")),
+        }
+    }
+    fn read_str_cow(&mut self) -> Result<std::borrow::Cow<'a, str>, sd::Error> {
+        self.p.skip_ws();
+        if self.p.peek() != Some(b'"') {
+            return Err(to_se(self.p.error("expected string")));
+        }
+        self.p.parse_string_cow().map_err(to_se)
     }
     fn begin_seq(&mut self) -> Result<(), sd::Error> {
         self.p.skip_ws();
@@ -733,8 +754,8 @@ impl Serialize for Value {
     }
 }
 
-impl Deserialize for Value {
-    fn deserialize<D: Deserializer>(d: &mut D) -> Result<Self, sd::Error> {
+impl<'de> Deserialize<'de> for Value {
+    fn deserialize<D: Deserializer<'de>>(d: &mut D) -> Result<Self, sd::Error> {
         match d.peek()? {
             Kind::Null => { d.read_null()?; Ok(Value::Null) }
             Kind::Bool => Ok(Value::Bool(d.read_bool()?)),
@@ -766,7 +787,7 @@ pub fn to_string_se<T: Serialize>(v: &T) -> Result<String, sd::Error> {
     Ok(s.out)
 }
 
-pub fn from_str_de<T: Deserialize>(s: &str) -> Result<T, sd::Error> {
+pub fn from_str_de<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T, sd::Error> {
     let mut d = JsonDe::new(s);
     let v = T::deserialize(&mut d)?;
     d.finish()?;

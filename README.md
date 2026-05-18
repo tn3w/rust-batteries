@@ -20,24 +20,37 @@ Perf vs `regex` crate over 20 patterns: geomean 1.17x, total time 0.74x (we win 
 
 Limits: programs >128 insts or `$` fall back to Pike VM (still linear).
 
-## serde.rs (305 LOC, safe, no deps)
+## serde.rs (548 LOC, safe, no deps)
 
-Format-agnostic Serialize/Deserialize traits + declarative derive. Functional parity with `serde` + `serde_derive` for owned data.
+Format-agnostic Serialize/Deserialize traits + declarative derive. Functional parity with `serde` + `serde_derive` for owned and borrowed data, structs, enums, and field/variant rename.
 
 ```rust
 use serde::*;
 serde_struct! {
-    pub struct User { pub id: u64, pub name: String, pub tags: Vec<String> }
+    pub struct Config {
+        pub host: String,
+        pub api_key as "api-key": String,   // rename
+        pub plain: bool,
+    }
 }
-let s = json::to_string_se(&user)?;
-let u: User = json::from_str_de(&s)?;
+serde_struct! {
+    pub struct Borrowed<'a> { pub name: &'a str }  // zero-copy
+}
+serde_enum! {
+    pub enum Status {
+        Active,                                // unit → "Active"
+        Failed as "failed",                    // variant rename
+        Retry(u32),                            // newtype → {"Retry": 3}
+        Error { code: i32, msg: String },      // struct → {"Error": {...}}
+    }
+}
 ```
 
-Traits: `Serialize`, `Deserialize`, `Serializer`, `Deserializer`. Single `Error` type. Built-in impls: bool, i8..i64/isize, u8..u64/usize, f32, f64, String, &str, Option, Box, Vec, [T], BTreeMap/HashMap<String,V>, tuples up to 6. `serde_struct!` macro derives both traits for structs with named fields; unknown fields are skipped, missing fields error. Skip macro for hand impls.
+Traits: `Serialize`, `Deserialize<'de>`, `Serializer`, `Deserializer<'de>`. Built-in impls: bool, i8..i64/isize, u8..u64/usize, f32, f64, String, `&'de str`, `Cow<'de, str>`, Option, Box, Vec, [T], BTreeMap/HashMap<String,V>, tuples up to 6. Macros: `serde_struct!` (named fields, optional `<'lt>`, `as "rename"` per field); `serde_enum!` (externally-tagged: unit/newtype/struct variants, `as "rename"` per variant or struct field). Unknown fields/variants skip; missing required fields error.
 
-Deserializer extension `num_kind()` reports I64/U64/F64 without consuming, so polymorphic targets (e.g. `json::Value`) keep number precision across formats.
+`num_kind()` extension reports I64/U64/F64 without consuming → polymorphic targets (e.g. `json::Value`) keep number precision. `read_str_borrowed()` returns `&'de str` slice when the source has no escapes, errors otherwise; `read_str_cow()` borrows when possible, allocates on escapes.
 
-Limits: no proc-macro derive (no enums with discriminants, no `#[serde(rename)]`). No borrowed `&'de str` (returns owned `String`).
+Output matches `serde`'s default tagged representation for structs and externally-tagged enums.
 
 ## ryu.rs (315 LOC, safe, no deps)
 
@@ -50,13 +63,11 @@ ryu::write_f64(&mut buf, 1.5e-10);     // "1.5e-10"
 
 Algorithm: Burger-Dybvig Dragon4. Boundary-asymmetric for `m == 2^52` normals. Round-half-to-even ties. k estimated via `log10`, fix-up via single ×10 step. Format matches `serde_json`/ryu rules: scientific when scientific-exp `< -5` or `>= 16`, signed exponent (`e+16`, `e-10`), else decimal. Integral floats get `.0` suffix.
 
-42/42 parity vs `serde_json` over corner cases (denorm min, f64::MAX, π, 1/3, just-below-1, 1eN/1e-N across full range).
-
 Perf: ~10-20x slower than `ryu` crate (no table lookup; pays for BigInt allocs on every call). Acceptable for JSON where floats are a fraction of total bytes; on float-heavy payloads expect 4-5x serde_json.
 
-## json.rs (774 LOC, safe, no deps)
+## json.rs (795 LOC, safe, no deps)
 
-`serde_json::Value` parity. Linear-time parse, BTreeMap objects (alphabetical output matches serde_json default). Implements `serde::Serialize`/`Deserialize` (above) for typed round-trips. Float output via `ryu.rs` above.
+`serde_json::Value` parity. Linear-time parse, BTreeMap objects (alphabetical output matches serde_json default). Implements `serde::Serialize`/`Deserialize<'de>` (above) for typed round-trips including zero-copy `&'de str`. Float output via `ryu.rs` above.
 
 ```rust
 let v = json::from_str(r#"{"id":42,"name":"alice"}"#)?;
