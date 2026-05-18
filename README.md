@@ -213,3 +213,44 @@ ChaCha: 20-round, 64-bit ctr + 64-bit stream (rand_chacha layout). x86_64 runtim
 OS entropy: Linux → direct `getrandom(2)` syscall (inline asm x86_64/aarch64, `/dev/urandom` fallback on ENOSYS); *BSD/macOS → `getentropy(3)`; Windows → `BCryptGenRandom`; else `/dev/urandom`.
 
 Perf vs `rand_chacha` 0.3 + `getrandom` 0.2 (AVX2 host): `next_u64` 0.74x, `fill_bytes` 1KiB 0.98x, `gen_range_u32` 0.74x, OS entropy 0.99x matches or beats across the board.
+
+## uuid.rs (205 LOC, safe core + `unsafe` UTF-8 wrap, no deps)
+
+UUID v4 + v7 with parity vs `uuid` crate.
+
+```rust
+let id = Uuid::new_v4();              // random
+let id = Uuid::now_v7();              // ms-timestamp + random
+let parsed: Uuid = "550e8400-e29b-41d4-a716-446655440000".parse()?;
+let s = id.to_string();                // hyphenated lowercase
+id.simple().to_string();               // 32 chars no hyphens
+id.braced().to_string();               // {…}
+id.urn().to_string();                  // urn:uuid:…
+Uuid::nil(); Uuid::max();
+id.as_bytes(); id.into_bytes();
+```
+
+Layout: `[u8; 16]` big-endian. v4 sets version=4 + RFC 4122 variant; v7 packs 48-bit Unix-ms timestamp into bytes 0–5 then 74 random bits + version/variant. Parser accepts hyphenated (36), simple (32), `{…}` braced (38), `urn:uuid:` prefix; rejects other lengths or non-hex.
+
+RNG: thread-local 1 KiB buffer refilled from `/dev/urandom` (no `getrandom` syscall fancy stuff; Linux/Unix only).
+
+Perf vs `uuid` 1.x (`v4`+`v7` features): total 0.98x — `new_v4` 1.31x (uuid uses `getrandom` syscall direct), `now_v7` 0.79x, parse 0.79–0.93x, display 1.13x.
+
+## dotenvy.rs (258 LOC, safe, no deps)
+
+`.env` parser + loader, parity vs `dotenvy` crate's `Iter`.
+
+```rust
+dotenvy::dotenv()?;                   // walk up for .env, set unset vars
+dotenvy::dotenv_override()?;          // overwrite existing
+dotenvy::from_path("/etc/app.env")?;
+dotenvy::from_filename(".env.local")?;
+let pairs = dotenvy::parse("KEY=value\nFOO=\"$KEY-bar\"\n")?;
+let pairs = dotenvy::from_read(reader)?;
+```
+
+Syntax: `KEY=VALUE` (alnum/`_`/`.` in keys); optional `export ` prefix; `#` line/inline comments; blank lines; double-quoted strings with `\n \r \t \\ \" \' \$` escapes and `$VAR`/`${VAR}` interpolation; single-quoted literals (no escapes, no interpolation); bare values trimmed, terminated by newline or `#`. Variable lookup: already-parsed keys first, then process env. `find_up` walks parent dirs.
+
+Parser: byte recursive descent, single pass; `Vec<(String, String)>` output preserves insertion order.
+
+Perf vs `dotenvy` 0.15 (3 inputs: small/quoted/big-200-keys): total 0.39x — ~2.6× faster across the board (dotenvy goes through a state machine + per-line allocations; this is one linear walk).
