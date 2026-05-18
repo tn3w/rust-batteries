@@ -179,18 +179,19 @@ thiserror! {
         "wrapped: {0}" Wrapped(source std::io::Error), // #[source] only
         "not found" NotFound,
         "bad {code}: {msg}" Bad { code: i32, msg: String },
+        "wrap {code}: {msg}" Wrap { code: i32, msg: String, source: std::io::Error },
         "pair {0}/{1}" Pair(i32, String),
-        "triple {0}/{1}/{2}" Triple(u8, u8, u8),
+        "six {0}/{1}/{2}/{3}/{4}/{5}" Six(u8, u8, u8, u8, u8, u8),
         transparent Trans(std::io::Error),             // #[error(transparent)]
     }
 }
 ```
 
-Variant syntax: format-string literal prefixes each variant (replaces `#[error("…")]`). Tuple keywords in field position — `from` (auto-`From<T>` + source), `source` (source only), `transparent` (forward `Display` + source to inner). Tuple variants 1–3 fields; named variants any count. Named uses Rust 2021 implicit captures (`{code}` → bound field). Tuple uses `{0}`/`{1}`/`{2}`.
+Variant syntax: format-string literal prefixes each variant (replaces `#[error("…")]`). Tuple keywords in field position `from` (auto-`From<T>` + source), `source` (source only), `transparent` (forward `Display` + source to inner). Tuple variants 1–16 fields (ident pool); named variants any count, and a field literally named `source` auto-wires `Error::source()`. Named uses Rust 2021 implicit captures (`{code}` → bound field). Tuple uses `{0}`/`{1}`/…
 
-Perf vs `thiserror` 1.0 derive (unit/named/from+Display): total 0.96x — matches the proc-macro output (Display goes through the same `write!` codegen).
+Perf vs `thiserror` 1.0 derive (unit/named/from+Display): total 0.99x matches the proc-macro output (Display goes through the same `write!` codegen).
 
-Limits: tuple variants capped at 3 fields; no `Backtrace` capture (requires `Error::provide` plumbing); named-field source must be declared via tuple form.
+Limits: no `Backtrace` capture (`Error::provide` is nightly-only `error_generic_member_access`).
 
 ## rand.rs (592 LOC, safe core + `unsafe` for syscalls/SIMD, no deps)
 

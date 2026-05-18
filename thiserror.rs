@@ -54,8 +54,7 @@ macro_rules! __thiserror_go {
         $crate::__thiserror_go!(($($m)*) $vis $Name
             [$($variants)* $V,]
             [$($disp)* {Self::$V}{fmt $fmt}]
-            [$($source)*]
-            [$($froms)*]
+            [$($source)*] [$($froms)*]
             $($rest)*);
     };
 
@@ -101,49 +100,104 @@ macro_rules! __thiserror_go {
 
     (($($m:tt)*) $vis:vis $Name:ident
      [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
-     $fmt:literal $V:ident ( $T:ty ) , $($rest:tt)*
+     $fmt:literal $V:ident ( $($T:ty),+ $(,)? ) , $($rest:tt)*
     ) => {
-        $crate::__thiserror_go!(($($m)*) $vis $Name
-            [$($variants)* $V($T),]
-            [$($disp)* {Self::$V(__0)}{fmt $fmt, __0}]
-            [$($source)*]
-            [$($froms)*]
-            $($rest)*);
-    };
-
-    (($($m:tt)*) $vis:vis $Name:ident
-     [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
-     $fmt:literal $V:ident ( $T0:ty, $T1:ty $(,)? ) , $($rest:tt)*
-    ) => {
-        $crate::__thiserror_go!(($($m)*) $vis $Name
-            [$($variants)* $V($T0, $T1),]
-            [$($disp)* {Self::$V(__0, __1)}{fmt $fmt, __0, __1}]
-            [$($source)*]
-            [$($froms)*]
-            $($rest)*);
-    };
-
-    (($($m:tt)*) $vis:vis $Name:ident
-     [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
-     $fmt:literal $V:ident ( $T0:ty, $T1:ty, $T2:ty $(,)? ) , $($rest:tt)*
-    ) => {
-        $crate::__thiserror_go!(($($m)*) $vis $Name
-            [$($variants)* $V($T0, $T1, $T2),]
-            [$($disp)* {Self::$V(__0, __1, __2)}{fmt $fmt, __0, __1, __2}]
-            [$($source)*]
-            [$($froms)*]
-            $($rest)*);
+        $crate::__te_walk_tuple!(
+            ($($m)*) $vis $Name $fmt $V
+            [$($variants)*] [$($disp)*] [$($source)*] [$($froms)*]
+            [$($rest)*]
+            [] []
+            [__a __b __c __d __e __f __g __h __i __j __k __l __m __n __o __p]
+            [$($T),+]
+        );
     };
 
     (($($m:tt)*) $vis:vis $Name:ident
      [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
      $fmt:literal $V:ident { $($f:ident : $T:ty),+ $(,)? } , $($rest:tt)*
     ) => {
+        $crate::__te_named_scan!(@scan [no] $($f)+ ;
+            ($($m)*) $vis $Name $fmt $V
+            [$($variants)*] [$($disp)*] [$($source)*] [$($froms)*]
+            [$($f : $T),+]
+            [$($rest)*]
+        );
+    };
+}
+
+#[macro_export]
+macro_rules! __te_walk_tuple {
+    (($($m:tt)*) $vis:vis $Name:ident $fmt:literal $V:ident
+     [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
+     [$($rest:tt)*]
+     [$($i:ident)*] [$( ($Ts:ty) )*]
+     [$($_pool:tt)*]
+     []
+    ) => {
+        $crate::__thiserror_go!(($($m)*) $vis $Name
+            [$($variants)* $V( $($Ts),* ),]
+            [$($disp)* {Self::$V($($i),*)}{fmt $fmt $(, $i)*}]
+            [$($source)*] [$($froms)*]
+            $($rest)*);
+    };
+
+    (($($m:tt)*) $vis:vis $Name:ident $fmt:literal $V:ident
+     [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
+     [$($rest:tt)*]
+     [$($i:ident)*] [$($Ts:tt)*]
+     [$h:ident $($pr:ident)*]
+     [$T0:ty $(, $Tr:ty)*]
+    ) => {
+        $crate::__te_walk_tuple!(
+            ($($m)*) $vis $Name $fmt $V
+            [$($variants)*] [$($disp)*] [$($source)*] [$($froms)*]
+            [$($rest)*]
+            [$($i)* $h] [$($Ts)* ($T0)]
+            [$($pr)*]
+            [$($Tr),*]
+        );
+    };
+}
+
+#[macro_export]
+macro_rules! __te_named_scan {
+    (@scan [$($s:tt)*] source $($r:ident)* ; $($ctx:tt)*) => {
+        $crate::__te_named_scan!(@scan [yes] $($r)* ; $($ctx)*);
+    };
+    (@scan [$($s:tt)*] $h:ident $($r:ident)* ; $($ctx:tt)*) => {
+        $crate::__te_named_scan!(@scan [$($s)*] $($r)* ; $($ctx)*);
+    };
+    (@scan [$s:tt] ; $($ctx:tt)*) => {
+        $crate::__te_emit_named!($($ctx)* [$s]);
+    };
+}
+
+#[macro_export]
+macro_rules! __te_emit_named {
+    (($($m:tt)*) $vis:vis $Name:ident $fmt:literal $V:ident
+     [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
+     [$($f:ident : $T:ty),+]
+     [$($rest:tt)*]
+     [yes]
+    ) => {
         $crate::__thiserror_go!(($($m)*) $vis $Name
             [$($variants)* $V { $($f: $T),+ },]
             [$($disp)* {Self::$V { $($f),+ }}{fmt $fmt}]
-            [$($source)*]
+            [$($source)* Self::$V { source, .. } => Some(source),]
             [$($froms)*]
+            $($rest)*);
+    };
+
+    (($($m:tt)*) $vis:vis $Name:ident $fmt:literal $V:ident
+     [$($variants:tt)*] [$($disp:tt)*] [$($source:tt)*] [$($froms:tt)*]
+     [$($f:ident : $T:ty),+]
+     [$($rest:tt)*]
+     [no]
+    ) => {
+        $crate::__thiserror_go!(($($m)*) $vis $Name
+            [$($variants)* $V { $($f: $T),+ },]
+            [$($disp)* {Self::$V { $($f),+ }}{fmt $fmt}]
+            [$($source)*] [$($froms)*]
             $($rest)*);
     };
 }
