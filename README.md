@@ -234,7 +234,27 @@ Layout: `[u8; 16]` big-endian. v4 sets version=4 + RFC 4122 variant; v7 packs 48
 
 RNG: thread-local 1 KiB buffer refilled from `/dev/urandom` (no `getrandom` syscall fancy stuff; Linux/Unix only).
 
-Perf vs `uuid` 1.x (`v4`+`v7` features): total 0.98x — `new_v4` 1.31x (uuid uses `getrandom` syscall direct), `now_v7` 0.79x, parse 0.79–0.93x, display 1.13x.
+Perf vs `uuid` 1.x (`v4`+`v7` features): total 0.98x `new_v4` 1.31x (uuid uses `getrandom` syscall direct), `now_v7` 0.79x, parse 0.79–0.93x, display 1.13x.
+
+## semver.rs (435 LOC, safe, no deps)
+
+`Version` + `VersionReq` per semver.org 2.0; parity vs `semver` crate's `Version`/`VersionReq` parse/match/ordering.
+
+```rust
+let v: Version = "1.2.3-rc.1+build.42".parse()?;
+v.major; v.minor; v.patch; v.pre.as_str(); v.build.as_str();
+Version::new(1, 2, 3).cmp(&Version::parse("1.2.4")?);  // Less
+
+let req: VersionReq = "^1.2".parse()?;
+req.matches(&Version::parse("1.5.0")?);                // true
+VersionReq::parse(">=1.0, <2.0")?.matches(&v);
+```
+
+Syntax: `MAJOR.MINOR.PATCH[-pre][+build]`. Pre/build = dot-separated alnum+hyphen idents; numeric pre-release idents reject leading zeros. Requirements: comma-AND of comparators with ops `= > >= < <= ~ ^` (default `^`); wildcards `* 1.* 1.2.*`. Ordering: numeric major/minor/patch then pre-release (empty > non-empty; per-ident numeric < alphanumeric, ASCII otherwise); build metadata ignored.
+
+Parser: byte recursive descent. Pre-release matching follows Cargo rule (pre-versions match only when same major.minor.patch as a pre-equipped comparator).
+
+Perf vs `semver` 1.0 (parse, req-parse, match, cmp): total 1.93x match/cmp on par (~1.0x), parse ~2x (semver crate has a hand-tuned lexer with single-pass identifier validation).
 
 ## dotenvy.rs (258 LOC, safe, no deps)
 
@@ -253,4 +273,4 @@ Syntax: `KEY=VALUE` (alnum/`_`/`.` in keys); optional `export ` prefix; `#` line
 
 Parser: byte recursive descent, single pass; `Vec<(String, String)>` output preserves insertion order.
 
-Perf vs `dotenvy` 0.15 (3 inputs: small/quoted/big-200-keys): total 0.39x — ~2.6× faster across the board (dotenvy goes through a state machine + per-line allocations; this is one linear walk).
+Perf vs `dotenvy` 0.15 (3 inputs: small/quoted/big-200-keys): total 0.39x ~2.6× faster across the board (dotenvy goes through a state machine + per-line allocations; this is one linear walk).
